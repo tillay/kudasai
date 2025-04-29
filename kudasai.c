@@ -2,61 +2,56 @@
 #include <stdlib.h>
 #include <libusb-1.0/libusb.h>
 #include <unistd.h>
-#include <syslog.h>
-#include <signal.h>
+#include <string.h>
 
-volatile sig_atomic_t running = 1;
-
-void handle_signal(int sig) {
-    running = 0;
-}
-
-int get_usb_count(void) {
-    libusb_context *ctx = NULL;
-    libusb_device **devs = NULL;
-    int count = -1;
-
-    if (libusb_init(&ctx) == 0) {
-        ssize_t cnt = libusb_get_device_list(ctx, &devs);
-        if (cnt >= 0) count = (int)cnt;
-        libusb_free_device_list(devs, 1);
-        libusb_exit(ctx);
-    }
-
-    return count;
-}
-
-void play_mp3(const char *dirpath) {
+const char *insert_path = NULL, *remove_path = NULL, *rand_dir = NULL;
+void play_random_mp3(const char *dirpath) {
     char cmd[256];
-    snprintf(cmd, sizeof(cmd), "mpg123 \"%s/$(ls %s | shuf -n 1)\" >/dev/null 2>&1", dirpath, dirpath);
+    snprintf(cmd, sizeof(cmd), "play \"%s/$(ls %s | shuf -n 1)\" >/dev/null 2>&1", dirpath, dirpath);
     system(cmd);
 }
 
-int main(void) {
-    signal(SIGTERM, handle_signal);
-    signal(SIGINT, handle_signal);
-    
-    openlog("kudasai", LOG_PID, LOG_DAEMON);
-    syslog(LOG_INFO, "kudasai started");
-    
-    int prev_count = get_usb_count();
-    char* file_path = "/usr/share/kudasai";
-    
-    while (running) {
-        int current_count = get_usb_count();
-        if (current_count > prev_count) {
-            syslog(LOG_INFO, "inserted >.<");
-            play_mp3(file_path);
-            prev_count = current_count;
-        }
-        if (current_count < prev_count) {
-            syslog(LOG_INFO, "removed o.o");
-            play_mp3(file_path);
-            prev_count = current_count;
-        }
+void play_mp3_filepath(const char *filepath) {
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "play \"%s\" >/dev/null 2>&1", filepath);
+    system(cmd);
+}
+
+int hotplug_callback(struct libusb_context *ctx, struct libusb_device *dev, libusb_hotplug_event event, void *_) {
+    if (event == LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED)
+        use_windows ? play_mp3_filepath("/home/$USER/kudasai/windows/insert.mp3") : insert_path ? play_mp3_filepath(insert_path) : rand_dir ? play_random_mp3(rand_dir) : 0;
+    else if (event == LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT)
+        use_windows ? play_mp3_filepath("/home/$USER/kudasai/windows/remove.mp3") : remove_path ? play_mp3_filepath(remove_path) : rand_dir ? play_random_mp3(rand_dir) : 0;
+    return 0;
+}
+
+int main(int argc, char *argv[]) {
+    if (argc == 1) {
+        printf(
+            "Usage: kudasai [OPTION]... [FILE]...\n"
+
+            "For the following:"
+            "A lowercase letter means one singular file."
+            "A capital letter means a directory to pull a random file from."
+            "Absolute or relative file paths are both ok"
+
+            "-f -F <path>   Path for both insertion and removal sounds"
+            "-i -I <path>   Path for USB insertion sound\n"
+            "-r -R <path>   Path for USB removal sound\n"
+        );
+        return 0;
+    }    
+
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-f") && i + 1 < argc) rand_dir = argv[++i];
+        else if (!strcmp(argv[i], "-i") && i + 1 < argc) insert_path = argv[++i];
+        else if (!strcmp(argv[i], "-r") && i + 1 < argc) remove_path = argv[++i];
     }
-    
-    syslog(LOG_INFO, "kudasai stopped");
-    closelog();
+
+    libusb_context *ctx = NULL;
+    libusb_hotplug_callback_handle cb;
+    libusb_init(&ctx);
+    libusb_hotplug_register_callback(ctx, LIBUSB_HOTPLUG_EVENT_DEVICE_ARRIVED | LIBUSB_HOTPLUG_EVENT_DEVICE_LEFT, 0, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY, hotplug_callback, NULL, &cb);
+    while (1) libusb_handle_events_completed(ctx, NULL);
     return 0;
 }
